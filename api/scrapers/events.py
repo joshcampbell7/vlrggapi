@@ -12,6 +12,7 @@ from utils.html_parsers import (
     normalize_image_url,
     parse_href_id_slug,
     parse_html,
+    combine_date_and_time,
 )
 from utils.http_client import fetch_with_retries, get_http_client
 
@@ -156,10 +157,10 @@ async def vlr_event_matches(event_id: str):
     Returns:
         dict: Response with status code and match list data
     """
-    cache_key = ("event_matches", event_id)
+    cache_key = ("event_matches_v3", event_id)
 
     async def build():
-        url = f"{VLR_BASE_URL}/event/matches/{event_id}"
+        url = f"{VLR_BASE_URL}/event/matches/{event_id}/?series_id=all"
         client = get_http_client()
         resp = await fetch_with_retries(url, client=client)
         status = resp.status_code
@@ -170,17 +171,22 @@ async def vlr_event_matches(event_id: str):
 
         matches = []
         current_date = ""
+        root = html.body or html.root
 
-        for elem in html.css(".wf-label.mod-large, a.wf-module-item.match-item"):
-            classes = elem.attributes.get("class", "")
-
-            if "wf-label" in classes:
+        for elem in root.traverse():
+            classes = elem.attributes.get("class") or ""
+            if "wf-label" in classes and "mod-large" in classes:
                 current_date = elem.text(strip=True)
+                continue
+            if elem.tag != "a" or "match-item" not in classes:
                 continue
 
             href = elem.attributes.get("href", "")
             match_id, _ = parse_href_id_slug(href)
             match_url = build_full_url(href)
+            time_el = elem.css_first(".match-item-time")
+            time_text = time_el.text(strip=True) if time_el else ""
+            match_timestamp = combine_date_and_time(current_date, time_text)
 
             team_elems = elem.css(".match-item-vs-team")
             teams = []
@@ -212,7 +218,8 @@ async def vlr_event_matches(event_id: str):
             matches.append({
                 "match_id": match_id,
                 "url": match_url,
-                "date": current_date,
+                "date": match_timestamp or current_date,
+                "unix_timestamp": match_timestamp,
                 "status": match_status,
                 "note": note,
                 "event_series": event_series,
